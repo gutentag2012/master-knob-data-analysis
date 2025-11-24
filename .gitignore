@@ -1,0 +1,10 @@
+# pyhton gitignore with venv
+__pycache__/
+*.py[cod]
+*.so
+
+#venv
+venv/
+
+# other
+gesture-images/
