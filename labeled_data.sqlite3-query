@@ -1,0 +1,201 @@
+-- database: ./labeled.sqlite
+
+-- Create row index
+ALTER TABLE sensorData ADD COLUMN row_index INTEGER;
+UPDATE sensorData
+SET row_index = rowid;
+CREATE INDEX idx_sensorData_row_index ON sensorData(row_index);
+
+-- Create session task row index
+ALTER TABLE sensorData ADD COLUMN session_task_row_index INTEGER;
+WITH numbered AS (
+    SELECT
+        id,
+        ROW_NUMBER() OVER (
+            PARTITION BY session_task_id
+            ORDER BY row_index
+        ) - 1 AS session_task_row_index  -- start from 0
+    FROM sensorData
+)
+UPDATE sensorData
+SET session_task_row_index = (
+    SELECT n.session_task_row_index
+    FROM numbered n
+    WHERE n.id = sensorData.id
+);
+
+WITH marker_pairs AS (
+    -- Pair each START with its nearest END within the same session_task
+    SELECT
+        start.session_task_id,
+        start.sensor_data_index AS start_index,
+        end.sensor_data_index   AS end_index,
+        -- Precompute group_id as timestamp of the first sensorData in this group
+        (SELECT timestamp
+         FROM sensorData
+         WHERE session_task_id = start.session_task_id
+           AND session_task_row_index = start.sensor_data_index
+        ) AS group_id
+    FROM preciseMarker start
+    JOIN preciseMarker end
+      ON start.session_task_id = end.session_task_id
+     AND start.marker_type = 'start'
+     AND end.marker_type   = 'end'
+     AND end.sensor_data_index >= start.sensor_data_index
+    -- Pick the first END after this START
+    AND NOT EXISTS (
+        SELECT 1
+        FROM preciseMarker e2
+        WHERE e2.session_task_id = start.session_task_id
+          AND e2.marker_type = 'end'
+          AND e2.sensor_data_index > start.sensor_data_index
+          AND e2.sensor_data_index < end.sensor_data_index
+    )
+)
+
+SELECT
+    sd.*,
+    mp.group_id
+FROM sensorData sd
+JOIN marker_pairs mp
+  ON sd.session_task_id = mp.session_task_id
+ AND sd.session_task_row_index BETWEEN mp.start_index AND mp.end_index
+ORDER BY sd.session_task_id, sd.session_task_row_index;
+
+select count(*) from sensorData;
+
+select * from preciseMarker where session_task_id = '7a49f730-4372-484b-8bc3-56f373046cc7';
+
+WITH start_end_indices AS (
+    SELECT 
+        s.session_task_id,
+        s.sensor_data_index AS start_index,
+        (
+            SELECT e.sensor_data_index
+            FROM preciseMarker e
+            WHERE e.marker_type = 'end'
+            AND e.sensor_data_index > s.sensor_data_index
+            AND e.session_task_id = s.session_task_id
+            ORDER BY e.sensor_data_index ASC
+            LIMIT 1
+        ) AS next_end_index
+    FROM preciseMarker s
+    WHERE s.marker_type = 'start'
+    group by s.session_task_id, s.sensor_data_index
+)
+select count(*)
+from sensorData sd
+    left join start_end_indices sei
+        on sd.session_task_id = sei.session_task_id
+        and sd.session_task_row_index >= sei.start_index
+        and sd.session_task_row_index <= sei.next_end_index
+    LEFT JOIN sessionTask st
+        ON sd.session_task_id = st.id
+    LEFT JOIN recordingTask rt
+        ON st.recording_task_id = rt.id
+where sei.start_index is not null
+GROUP BY sd.session_task_id;
+
+WITH data_with_state AS (
+    SELECT
+        sd.*, 
+        rt.title,
+        stm.marker AS marker_at_this_timestamp,
+        (
+            SELECT stm_inner.marker
+            FROM sessionTaskMarker stm_inner
+            WHERE stm_inner.session_task_id = sd.session_task_id
+              AND stm_inner.timestamp <= sd.timestamp
+              AND stm_inner.marker IN ('start', 'end')
+            ORDER BY stm_inner.timestamp DESC
+            LIMIT 1
+        ) AS most_recent_marker_type,
+        (
+            SELECT stm_inner.timestamp
+            FROM sessionTaskMarker stm_inner
+            WHERE stm_inner.session_task_id = sd.session_task_id
+              AND stm_inner.timestamp <= sd.timestamp
+              AND stm_inner.marker = 'start'
+            ORDER BY stm_inner.timestamp DESC
+            LIMIT 1
+        ) AS group_start_timestamp
+        
+    FROM sensorData sd
+    LEFT JOIN sessionTaskMarker stm
+        ON sd.session_task_id = stm.session_task_id
+        AND sd.timestamp = stm.timestamp
+    LEFT JOIN sessionTask st
+        ON sd.session_task_id = st.id
+    LEFT JOIN recordingTask rt
+        ON st.recording_task_id = rt.id
+)
+SELECT count(*)
+FROM data_with_state dws
+WHERE
+    most_recent_marker_type = 'start'
+    OR marker_at_this_timestamp = 'end';
+
+
+WITH data_with_state AS (
+    SELECT
+        sd.*, 
+        rt.title,
+        stm.marker_type AS marker_at_this_timestamp,
+        (
+            SELECT stm_inner.marker_type
+            FROM preciseMarker stm_inner
+            LEFT JOIN sensorData sd_inner ON stm_inner.sensor_data_id = sd_inner.id
+            WHERE stm_inner.session_task_id = sd.session_task_id
+              AND sd_inner.timestamp <= sd.timestamp
+              AND stm_inner.marker_type IN ('start', 'end')
+            ORDER BY sd_inner.timestamp DESC
+            LIMIT 1
+        ) AS most_recent_marker_type,
+        (
+            SELECT sd_inner.timestamp
+            FROM preciseMarker stm_inner
+            LEFT JOIN sensorData sd_inner ON stm_inner.sensor_data_id = sd_inner.id
+            WHERE stm_inner.session_task_id = sd.session_task_id
+              AND sd_inner.timestamp <= sd.timestamp
+              AND stm_inner.marker_type = 'start'
+            ORDER BY sd_inner.timestamp DESC
+            LIMIT 1
+        ) AS group_start_timestamp
+        
+    FROM sensorData sd
+    LEFT JOIN preciseMarker stm
+        ON sd.session_task_id = stm.session_task_id
+        AND sd.id = stm.sensor_data_id
+    LEFT JOIN sessionTask st
+        ON sd.session_task_id = st.id
+    LEFT JOIN recordingTask rt
+        ON st.recording_task_id = rt.id
+)
+SELECT 
+    group_start_timestamp AS group_id,
+    marker_at_this_timestamp AS marker,
+    id,
+    session_task_id,
+    title as gesture,
+    timestamp,
+    button_pressed,
+    motor_angle,
+    touch_1_position,
+    touch_1_pressure,
+    touch_1_channel,
+    touch_2_position,
+    touch_2_pressure,
+    touch_2_channel,
+    touch_3_position,
+    touch_3_pressure,
+    touch_3_channel,
+    touch_4_position,
+    touch_4_pressure,
+    touch_4_channel,
+    touch_5_position,
+    touch_5_pressure,
+    touch_5_channel
+FROM data_with_state dws
+WHERE
+    most_recent_marker_type = 'start'
+    OR marker_at_this_timestamp = 'end';
