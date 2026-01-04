@@ -1,4 +1,4 @@
--- database: ./labeled.sqlite
+-- database: ./labeled_new.sqlite
 
 -- Create row index
 ALTER TABLE sensorData ADD COLUMN row_index INTEGER;
@@ -23,6 +23,15 @@ SET session_task_row_index = (
     FROM numbered n
     WHERE n.id = sensorData.id
 );
+
+CREATE INDEX idx_preciseMarker_lookup 
+ON preciseMarker (session_task_id, marker_type, sensor_data_index);
+
+CREATE INDEX idx_sensorData_task_row 
+ON sensorData (session_task_id, session_task_row_index);
+
+CREATE INDEX idx_sessionTask_recording_task_id 
+ON sessionTask (recording_task_id);
 
 WITH marker_pairs AS (
     -- Pair each START with its nearest END within the same session_task
@@ -52,7 +61,6 @@ WITH marker_pairs AS (
           AND e2.sensor_data_index < end.sensor_data_index
     )
 )
-
 SELECT
     sd.*,
     mp.group_id

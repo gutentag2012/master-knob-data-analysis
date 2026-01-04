@@ -55,6 +55,14 @@ class TouchTracker:
         All old touches outside of the match_threshold will be ignored.
         Then the old touch that is closest to any new touch will be matched first, removed from the pool, and assigned to that new touch.
         """
+        
+        def calculate_wrapped_distance(pos1, pos2):
+            """Calculates the shortest distance between two points on a 2pi circle."""
+            delta = abs(pos1 - pos2)
+            # The shortest distance is the minimum of the direct difference (delta) 
+            # and the distance around the wrap (2 * pi - delta).
+            return min(delta, 2 * math.pi - delta)
+
         matched = [None] * len(new_touches)
         new_to_old = []
         for new_index, (rel_pos, pressure, *rest) in enumerate(new_touches):
@@ -62,7 +70,7 @@ class TouchTracker:
                 continue
             sorted_old = []
             for old_id, old_pos in self.active_touches.items():
-                dist = abs(old_pos - rel_pos)
+                dist = calculate_wrapped_distance(old_pos, rel_pos)
                 if dist < self.match_threshold:
                     sorted_old.append((dist, old_id))
             sorted_old.sort()
@@ -73,20 +81,20 @@ class TouchTracker:
         used_old_ids = set()
         for new_index, sorted_old in new_to_old:
             rel_pos, pressure, *rest = new_touches[new_index]
-            if matched[new_index] is not None:
-                continue
+            assigned = False
             for dist, old_id in sorted_old:
                 if old_id not in used_old_ids:
                     matched[new_index] = (old_id, rel_pos, pressure, *rest)
                     used_old_ids.add(old_id)
+                    assigned = True
                     break
-            if matched[new_index] is None:
+                    
+            if not assigned:
                 tid = self.next_touch_id
                 self.next_touch_id += 1
                 matched[new_index] = (tid, rel_pos, pressure, *rest)
-                used_old_ids.add(tid)
+                used_old_ids.add(tid) # Technically new IDs don't need to be in used_old_ids for this loop, but it's safe.
 
-        # Update active touches
         matched = [m for m in matched if m is not None]
         self.active_touches = {tid: pos for tid, pos, *rest in matched}
 
