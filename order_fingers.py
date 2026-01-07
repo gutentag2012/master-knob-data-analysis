@@ -10,44 +10,11 @@ class TouchTracker:
         self.next_touch_id = 0
         self.active_touches = {}  # id -> (rel_pos, pressure)
         self.match_threshold = match_threshold
+        self.printed = 0
 
         """Resets the tracker state."""
     def clear(self):
         self.active_touches.clear()
-
-    def assign_ids_old(self, new_touches):
-        matched = []
-        used_old_ids = set()
-
-        for rel_pos, pressure, *rest in new_touches:
-            if rel_pos is None or math.isnan(rel_pos):
-                continue
-            best_id = None
-            best_dist = float("inf")
-
-            # Find nearest old touch
-            for old_id, (old_pos, _) in self.active_touches.items():
-                dist = abs(old_pos - rel_pos)
-                print(old_id, dist)
-                if dist < best_dist and old_id not in used_old_ids:
-                    best_dist = dist
-                    best_id = old_id
-
-            print(f"New touch at {rel_pos} best matches old ID {best_id} at distance {best_dist}")
-            if best_id is not None and best_dist < self.match_threshold:
-                # Reuse existing ID
-                matched.append((best_id, rel_pos, pressure, *rest))
-                used_old_ids.add(best_id)
-            else:
-                # New touch
-                tid = self.next_touch_id
-                self.next_touch_id += 1
-                matched.append((tid, rel_pos, pressure, *rest))
-                used_old_ids.add(tid)
-
-        # Update active touches
-        self.active_touches = {tid: (pos, pr) for tid, pos, pr, *rest in matched}
-        return matched
 
     def assign_ids(self, new_touches):
         """
@@ -56,12 +23,21 @@ class TouchTracker:
         Then the old touch that is closest to any new touch will be matched first, removed from the pool, and assigned to that new touch.
         """
         
-        def calculate_wrapped_distance(pos1, pos2):
-            """Calculates the shortest distance between two points on a 2pi circle."""
-            delta = abs(pos1 - pos2)
-            # The shortest distance is the minimum of the direct difference (delta) 
-            # and the distance around the wrap (2 * pi - delta).
-            return min(delta, 2 * math.pi - delta)
+        def calculate_wrapped_distance(phi1, phi2):
+            """
+            Calculates the shortest angular distance between two points on a circle.
+            Returns a value between 0 and pi.
+            """
+            # Use modulo to ensure points are within [0, 2pi]
+            two_pi = 2 * math.pi
+            phi1 = phi1 % two_pi
+            phi2 = phi2 % two_pi
+            
+            # Calculate absolute difference
+            diff = abs(phi1 - phi2)
+            
+            # Return the smaller of the two possible paths
+            return min(diff, two_pi - diff)
 
         matched = [None] * len(new_touches)
         new_to_old = []

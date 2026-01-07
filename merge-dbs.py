@@ -42,7 +42,7 @@ with sqlite3.connect('merged.sqlite') as merged:
     merged.execute("ALTER TABLE sensorData ADD COLUMN timestamp_ms_string TEXT;")
     merged.commit()
 
-other_db_files = ['./raw_data/knob-data-collection_single_6.db', './raw_data/knob-data-collection_single_7.db']
+other_db_files = ['./raw_data/knob-data-collection_single_6.db', './raw_data/knob-data-collection_single_7.db', './raw_data/knob-data-collection_single_8.db', './raw_data/knob-data-collection_single_9.db']
 
 for db_path in other_db_files:
     print(f"Merging {db_path}...")
