@@ -1,77 +1,104 @@
 import math
 
 class TouchTracker:
-    def __init__(self, match_threshold: float = math.pi / 8):
+    def __init__(self, match_threshold: float = math.pi / 8, max_age=200):
         """
         Initializes a touch tracker to assign consistent IDs across frames.
         :param match_threshold: Max distance (in relative position units, e.g. degrees)
                                 to consider a touch the same as in the previous frame.
         """
         self.next_touch_id = 0
-        self.active_touches = {}  # id -> (rel_pos, pressure)
         self.match_threshold = match_threshold
-        self.printed = 0
+        self.max_age = max_age
+        
+        # Currently active: {id: position}
+        self.active_touches = {}
+        
+        # Inactive but remembered: {id: {"pos": pos, "age": 0}}
+        self.persistence_buffer = {}
 
         """Resets the tracker state."""
     def clear(self):
         self.active_touches.clear()
+        self.persistence_buffer.clear()
 
     def assign_ids(self, new_touches):
-        """
-        For each new touch, all old touches will be sorted by their distance to the new touch.
-        All old touches outside of the match_threshold will be ignored.
-        Then the old touch that is closest to any new touch will be matched first, removed from the pool, and assigned to that new touch.
-        """
-        
         def calculate_wrapped_distance(phi1, phi2):
-            """
-            Calculates the shortest angular distance between two points on a circle.
-            Returns a value between 0 and pi.
-            """
-            # Use modulo to ensure points are within [0, 2pi]
             two_pi = 2 * math.pi
-            phi1 = phi1 % two_pi
-            phi2 = phi2 % two_pi
-            
-            # Calculate absolute difference
+            phi1, phi2 = phi1 % two_pi, phi2 % two_pi
             diff = abs(phi1 - phi2)
-            
-            # Return the smaller of the two possible paths
             return min(diff, two_pi - diff)
 
         matched = [None] * len(new_touches)
-        new_to_old = []
+        new_to_candidates = []
+
+        # 1. Combine Active and Persisted touches as candidates for matching
+        candidate_pool = {}
+        # Active touches get priority (implicit in distance check or order)
+        for tid, pos in self.active_touches.items():
+            candidate_pool[tid] = pos
+        # Persisted touches (the "graveyard")
+        for tid, data in self.persistence_buffer.items():
+            candidate_pool[tid] = data["pos"]
+
+        # 2. Build candidate list for each new input
         for new_index, (rel_pos, pressure, *rest) in enumerate(new_touches):
-            if rel_pos is None or math.isnan(rel_pos):
+            if rel_pos is None or (isinstance(rel_pos, float) and math.isnan(rel_pos)):
                 continue
-            sorted_old = []
-            for old_id, old_pos in self.active_touches.items():
+            
+            sorted_candidates = []
+            for tid, old_pos in candidate_pool.items():
                 dist = calculate_wrapped_distance(old_pos, rel_pos)
                 if dist < self.match_threshold:
-                    sorted_old.append((dist, old_id))
-            sorted_old.sort()
-            new_to_old.append((new_index, sorted_old))
+                    sorted_candidates.append((dist, tid))
+            
+            sorted_candidates.sort()
+            new_to_candidates.append((new_index, sorted_candidates))
+
+        # 3. Greedy Matching (Closest pairs first)
+        new_to_candidates.sort(key=lambda x: x[1][0][0] if x[1] else float("inf"))
+        used_candidate_ids = set()
         
-        # Sort new touches by their closest old touch distance
-        new_to_old.sort(key=lambda x: x[1][0][0] if x[1] else float("inf"))
-        used_old_ids = set()
-        for new_index, sorted_old in new_to_old:
+        for new_index, sorted_candidates in new_to_candidates:
             rel_pos, pressure, *rest = new_touches[new_index]
             assigned = False
-            for dist, old_id in sorted_old:
-                if old_id not in used_old_ids:
-                    matched[new_index] = (old_id, rel_pos, pressure, *rest)
-                    used_old_ids.add(old_id)
+            for dist, tid in sorted_candidates:
+                if tid not in used_candidate_ids:
+                    matched[new_index] = (tid, rel_pos, pressure, *rest)
+                    used_candidate_ids.add(tid)
                     assigned = True
                     break
-                    
+            
             if not assigned:
                 tid = self.next_touch_id
                 self.next_touch_id += 1
                 matched[new_index] = (tid, rel_pos, pressure, *rest)
-                used_old_ids.add(tid) # Technically new IDs don't need to be in used_old_ids for this loop, but it's safe.
+                used_candidate_ids.add(tid)
 
-        matched = [m for m in matched if m is not None]
-        self.active_touches = {tid: pos for tid, pos, *rest in matched}
+        # 4. Update state for the NEXT frame
+        valid_matches = [m for m in matched if m is not None]
+        new_active_ids = {m[0] for m in valid_matches}
+        
+        # Move currently active touches that weren't matched into persistence
+        for tid, pos in self.active_touches.items():
+            if tid not in new_active_ids:
+                self.persistence_buffer[tid] = {"pos": pos, "age": 0}
 
-        return matched
+        # Update ages in persistence buffer and remove old ones
+        expired_ids = []
+        for tid in list(self.persistence_buffer.keys()):
+            if tid in new_active_ids:
+                # Successfully resurrected, remove from graveyard
+                del self.persistence_buffer[tid]
+            else:
+                self.persistence_buffer[tid]["age"] += 1
+                if self.persistence_buffer[tid]["age"] > self.max_age:
+                    expired_ids.append(tid)
+        
+        for tid in expired_ids:
+            del self.persistence_buffer[tid]
+
+        # Finalize active_touches for the next row
+        self.active_touches = {m[0]: m[1] for m in valid_matches}
+
+        return valid_matches
